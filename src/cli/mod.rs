@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{PathBuf};
 
 use crate::common::CommonOpts;
 
@@ -21,11 +21,14 @@ pub enum OutputFormat {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     Analyze {
+        #[arg(long, required = false)]
+        path: Option<PathBuf>,
+
         #[arg(
             long,
             help = "Output file to write filtered lines. If omitted, prints to stdout."
         )]
-        out: PathBuf,
+        out: Option<PathBuf>,
 
         #[command(flatten)]
         common: CommonOpts,
