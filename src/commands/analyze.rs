@@ -33,6 +33,6 @@ pub fn run(path: Option<PathBuf>, out: Option<PathBuf>, common: &CommonOpts) -> 
     }
 
     let log_lines = get_log_lines(file_path, input_from_stdin, &common.date_format);
-
+    println!("[analyze] log_lines: {:?}", log_lines);
     Ok(())
 }

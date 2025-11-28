@@ -1,5 +1,9 @@
 use std::{
-    cmp::max, fs::{self, File}, io::{BufReader, Read}, path::{Path, PathBuf}
+    cmp::min,
+    fs::{self, File},
+    io::{BufRead, BufReader, Read},
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
@@ -18,16 +22,59 @@ pub struct LogFilters {
     pub substring_match: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct LogLine {
-    source: String,
+    source: Arc<str>,
     raw: String,
     timestamp: Option<DateTime<Utc>>,
-    level: Option<String>
+    level: Option<String>,
 }
 
 impl LogLine {
-    fn new(source: String, raw: String, timestamp: Option<DateTime<Utc>>, level: Option<String>) -> Self {
-        Self { source, raw, timestamp, level }
+    fn new(
+        source: Arc<str>,
+        raw: String,
+        timestamp: Option<DateTime<Utc>>,
+        level: Option<String>,
+    ) -> Self {
+        Self {
+            source,
+            raw,
+            timestamp,
+            level,
+        }
+    }
+}
+
+pub struct LineReader {
+    reader: BufReader<Box<dyn Read>>,
+    buffer: String,
+}
+
+impl LineReader {
+    fn new(path: &PathBuf) -> Result<Self> {
+        let reader = build_reader(path)?;
+        Ok(Self {
+            reader,
+            buffer: String::new(),
+        })
+    }
+}
+
+impl Iterator for LineReader {
+    type Item = Result<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.buffer.clear();
+
+        match self.reader.read_line(&mut self.buffer) {
+            Ok(0) => None,
+            Ok(_) => {
+                let line = self.buffer.trim().to_owned();
+                Some(Ok(line))
+            }
+            Err(err) => Some(Err(err.into())),
+        }
     }
 }
 
@@ -133,42 +180,35 @@ fn walk(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-pub fn read_lines(path: &PathBuf) -> Result<Vec<String>> {
-    // Decide if it's gzipped
+pub fn read_lines(path: &PathBuf) -> Result<LineReader> {
+    LineReader::new(path)
+}
+
+fn build_reader(path: &PathBuf) -> Result<BufReader<Box<dyn Read>>> {
     let is_gz = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("gz"))
         .unwrap_or(false);
 
-    let file = File::open(path)?;
+    let file = File::open(path).with_context(|| format!("Failed to open '{}'", path.display()))?;
 
-    // Pick the right reader
     let reader: Box<dyn Read> = if is_gz {
         Box::new(GzDecoder::new(file))
     } else {
         Box::new(file)
     };
 
-    // Wrap in BufReader
-    let mut buf = BufReader::new(reader);
-
-    // Load entire content
-    let mut contents = String::new();
-    buf.read_to_string(&mut contents)?;
-
-    // Split into trimmed lines
-    let lines = contents
-        .lines()
-        .map(|l| l.trim().to_string())
-        .collect();
-
-    Ok(lines)
+    Ok(BufReader::new(reader))
 }
 
 fn extract_log_timestamp(line: &str, date_format: &str) -> Option<DateTime<Utc>> {
-    // We try increasing slices and keep the longest valid match
-    let max_len = max(line.len(), 40);  // arbitrary cap
+    // We try increasing slices up to a small prefix cap.
+    let max_len = min(line.len(), 40);
+
+    if max_len < 10 {
+        return None;
+    }
 
     for end in 10..=max_len {
         let candidate = line[..end].trim();
@@ -181,8 +221,10 @@ fn extract_log_timestamp(line: &str, date_format: &str) -> Option<DateTime<Utc>>
 }
 
 fn detect_level(line: &str) -> Option<String> {
+    let upper = line.to_ascii_uppercase();
+
     for level in LEVELS {
-        if line.to_ascii_uppercase().contains(level) {
+        if upper.contains(level) {
             return Some(level.to_string());
         }
     }
@@ -190,7 +232,11 @@ fn detect_level(line: &str) -> Option<String> {
     None
 }
 
-pub fn get_log_lines(path: PathBuf, input_from_stdin: bool, date_format: &str) -> Result<Vec<LogLine>> {
+pub fn get_log_lines(
+    path: PathBuf,
+    input_from_stdin: bool,
+    date_format: &str,
+) -> Result<Vec<LogLine>> {
     // Get all the files available
     let mut all_files: Vec<PathBuf> = Vec::new();
     if path.is_dir() {
@@ -199,14 +245,7 @@ pub fn get_log_lines(path: PathBuf, input_from_stdin: bool, date_format: &str) -
         all_files.push(path.clone());
     }
 
-    let mut lines: Vec<String> = Vec::new();
-
-    for file in all_files {
-        let file_lines = read_lines(&file).unwrap();
-        lines.extend(file_lines);
-    }
-
-    let source = if input_from_stdin {
+    let source_label = if input_from_stdin {
         "stdin".to_string()
     } else {
         path.file_name()
@@ -214,16 +253,21 @@ pub fn get_log_lines(path: PathBuf, input_from_stdin: bool, date_format: &str) -
             .unwrap_or("unknown")
             .to_string()
     };
+    let source: Arc<str> = Arc::from(source_label);
 
     let mut log_lines: Vec<LogLine> = Vec::new();
 
-    for raw in lines {
-        let timestamp: Option<DateTime<Utc>> = extract_log_timestamp(raw.as_ref(), date_format);
-        let level = detect_level(raw.as_ref());
+    for file in all_files {
+        let reader = read_lines(&file)
+            .with_context(|| format!("Failed to read lines from '{}'", file.display()))?;
 
-        log_lines.push(
-            LogLine::new(source.clone(), raw, timestamp, level)
-        );
+        for raw in reader {
+            let raw = raw?;
+            let timestamp: Option<DateTime<Utc>> = extract_log_timestamp(raw.as_ref(), date_format);
+            let level = detect_level(raw.as_ref());
+
+            log_lines.push(LogLine::new(source.clone(), raw, timestamp, level));
+        }
     }
 
     Ok(log_lines)
