@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::{PathBuf};
+use std::path::PathBuf;
 
 use crate::common::CommonOpts;
 

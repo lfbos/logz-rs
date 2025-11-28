@@ -1,13 +1,14 @@
+use crate::common::{CommonOpts, build_filters, get_log_lines};
 use anyhow::Result;
 use std::io;
 use std::path::PathBuf;
-use crate::common::{CommonOpts, build_filters};
 
 /// Run the `analyze` command.
 pub fn run(path: Option<PathBuf>, out: Option<PathBuf>, common: &CommonOpts) -> Result<()> {
-    let _filters = build_filters(common)?;
+    let filters = build_filters(common)?;
 
     let file_path: PathBuf;
+    let mut input_from_stdin: bool = false;
 
     match path {
         Some(path) => {
@@ -19,11 +20,19 @@ pub fn run(path: Option<PathBuf>, out: Option<PathBuf>, common: &CommonOpts) -> 
             io::stdin()
                 .read_line(&mut user_input)
                 .expect("Failed to read line");
+            input_from_stdin = true;
             file_path = PathBuf::from(user_input.trim())
         }
     }
 
-    println!("{:?}", file_path);
-    
+    if !file_path.exists() {
+        return Err(anyhow::anyhow!(
+            "File does not exist: {}",
+            file_path.display()
+        ));
+    }
+
+    let log_lines = get_log_lines(file_path, input_from_stdin, &common.date_format);
+
     Ok(())
 }
