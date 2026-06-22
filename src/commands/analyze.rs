@@ -1,38 +1,33 @@
-use crate::common::{CommonOpts, build_filters, get_log_lines};
-use anyhow::Result;
-use std::io;
+use crate::common::{CommonOpts, build_filters, get_log_lines, resolve_input_path};
+use anyhow::{Context, Result};
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 
 /// Run the `analyze` command.
 pub fn run(path: Option<PathBuf>, out: Option<PathBuf>, common: &CommonOpts) -> Result<()> {
     let filters = build_filters(common)?;
+    let (file_path, input_from_stdin) = resolve_input_path(path)?;
 
-    let file_path: PathBuf;
-    let mut input_from_stdin: bool = false;
+    let log_stream = get_log_lines(file_path, input_from_stdin, &common.date_format, filters)?;
 
-    match path {
-        Some(path) => {
-            file_path = path;
+    let mut writer: Box<dyn Write> = match &out {
+        Some(p) => {
+            let f = File::create(p)
+                .with_context(|| format!("Failed to create output file '{}'", p.display()))?;
+            Box::new(BufWriter::new(f))
         }
-        None => {
-            println!("Reading from stdin (press Ctrl+D to end, or Ctrl+C to cancel)...");
-            let mut user_input = String::new();
-            io::stdin()
-                .read_line(&mut user_input)
-                .expect("Failed to read line");
-            input_from_stdin = true;
-            file_path = PathBuf::from(user_input.trim())
-        }
-    }
+        None => Box::new(BufWriter::new(io::stdout().lock())),
+    };
 
-    if !file_path.exists() {
-        return Err(anyhow::anyhow!(
-            "File does not exist: {}",
-            file_path.display()
-        ));
+    let mut processed = 0usize;
+    for log_line in log_stream {
+        let line = log_line?;
+        writeln!(writer, "{}", line.raw)?;
+        processed += 1;
     }
+    writer.flush()?;
 
-    let log_lines = get_log_lines(file_path, input_from_stdin, &common.date_format);
-    println!("[analyze] log_lines: {:?}", log_lines);
+    eprintln!("[analyze] processed {} filtered log lines", processed);
     Ok(())
 }

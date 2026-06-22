@@ -7,7 +7,11 @@ fn main() {
 
     let result = match cli.command {
         Commands::Analyze { path, out, common } => analyze::run(path, out, &common),
-        Commands::Stats { format, common } => stats::run(&format, &common),
+        Commands::Stats {
+            path,
+            format,
+            common,
+        } => stats::run(path, &format, &common),
         Commands::Tail {
             path,
             interval,

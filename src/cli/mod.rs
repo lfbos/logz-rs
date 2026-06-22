@@ -34,6 +34,9 @@ pub enum Commands {
         common: CommonOpts,
     },
     Stats {
+        #[arg(long, required = false)]
+        path: Option<PathBuf>,
+
         #[arg(
             short,
             long = "format",
